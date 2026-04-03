@@ -11,6 +11,7 @@ find_package(VTK COMPONENTS
   RenderingOpenGL2
   RenderingWebGPU
   RenderingUI
+  RenderingVolumeOpenGL2
 )
 
 if (NOT VTK_FOUND)

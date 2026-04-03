@@ -1,20 +1,17 @@
-#include <vtkActor.h>
 #include <vtkCamera.h>
-#include <vtkDataSet.h>
-#include <vtkLookupTable.h>
+#include <vtkColorTransferFunction.h>
+#include <vtkGPUVolumeRayCastMapper.h>
+#include <vtkImageData.h>
 #include <vtkNew.h>
-#include <vtkPartitionedDataSet.h>
-#include <vtkPartitionedDataSetCollection.h>
-#include <vtkPartitionedDataSetCollectionSource.h>
-#include <vtkPointData.h>
-#include <vtkPolyData.h>
-#include <vtkPolyDataMapper.h>
+#include <vtkPiecewiseFunction.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
-#include <vtkXMLPolyDataReader.h>
+#include <vtkVolume.h>
+#include <vtkVolumeProperty.h>
 
+#include <cmath>
 #include <iostream>
 
 #ifdef VTKWEBGPU_EMSCRIPTEN
@@ -25,75 +22,99 @@
 #endif
 
 int main(int argc, char *argv[]) {
-  vtkSmartPointer<vtkPolyData> dataObj = nullptr;
+  // Create a test vtkImageData with SHORT scalar type
+  vtkNew<vtkImageData> imageData;
+  imageData->SetDimensions(200, 200, 200);
+  imageData->AllocateScalars(VTK_SHORT, 1);
 
-  if (argc > 1) {
-    // Load VTP file if argument is provided
-    vtkNew<vtkXMLPolyDataReader> reader;
-    reader->SetFileName(argv[1]);
-    reader->Update();
-    dataObj = reader->GetOutput();
-    // print all data arrays
-    for (int i = 0; i < dataObj->GetPointData()->GetNumberOfArrays(); ++i) {
-      vtkDataArray *array = dataObj->GetPointData()->GetArray(i);
-      if (array) {
-        std::cout << "Point Data Array " << i << ": " << array->GetName()
-                  << std::endl;
+  // Fill with a Mandelbulb fractal pattern
+  int *dims = imageData->GetDimensions();
+  double cx = dims[0] / 2.0, cy = dims[1] / 2.0, cz = dims[2] / 2.0;
+  double scale = 1.5 / std::min({cx, cy, cz}); // Zoom in for more detail
+  int maxIter = 14;                            // More iterations for complexity
+  double power = 9.0; // Try 8.0, 8.5, or 9.0 for different looks
+
+  for (int z = 0; z < dims[2]; ++z) {
+    for (int y = 0; y < dims[1]; ++y) {
+      for (int x = 0; x < dims[0]; ++x) {
+        // Map voxel to [-1.2, 1.2] cube (zoomed)
+        double nx = (x - cx) * scale;
+        double ny = (y - cy) * scale;
+        double nz = (z - cz) * scale;
+        double zx = nx, zy = ny, zz = nz;
+        int iter = 0;
+        double dr = 1.0;
+        double r = 0.0;
+        for (; iter < maxIter; ++iter) {
+          r = std::sqrt(zx * zx + zy * zy + zz * zz);
+          if (r > 1.2)
+            break;
+          double theta = std::atan2(std::sqrt(zx * zx + zy * zy), zz);
+          double phi = std::atan2(zy, zx);
+          dr = std::pow(r, power - 1.0) * power * dr + 1.0;
+          double zr = std::pow(r, power);
+          theta = theta * power;
+          phi = phi * power;
+          zx = zr * std::sin(theta) * std::cos(phi) + nx;
+          zy = zr * std::sin(theta) * std::sin(phi) + ny;
+          zz = zr * std::cos(theta) + nz;
+        }
+        // Combine iteration and escape radius for more color variation
+        double value =
+            (iter == maxIter)
+                ? 1.0
+                : (static_cast<double>(iter) + (1.2 - std::min(r, 1.2))) /
+                      maxIter;
+        short val = static_cast<short>(value * 32767);
+        auto *ptr = static_cast<short *>(imageData->GetScalarPointer(x, y, z));
+        *ptr = val;
       }
     }
-  } else {
-    // Create the source
-    vtkNew<vtkPartitionedDataSetCollectionSource> source;
-    source->SetNumberOfShapes(2);
-    source->Update();
-
-    // For demonstration, get the first dataset from the collection
-    vtkPartitionedDataSetCollection *collection = source->GetOutput();
-    if (collection->GetNumberOfPartitionedDataSets() > 0 &&
-        collection->GetPartitionedDataSet(0)->GetNumberOfPartitions() > 0) {
-      dataObj = vtkPolyData::SafeDownCast(
-          collection->GetPartitionedDataSet(1)->GetPartition(0));
-    }
   }
 
-  vtkNew<vtkLookupTable> lut;
-  lut->SetNumberOfTableValues(256);
-  lut->Build();
-  // Interpolate between blue, white, and red over 256 colors
-  for (int i = 0; i < 256; ++i) {
-    double t = i / 255.0;
-    double r, g, b;
-    if (t < 0.5) {
-      // Interpolate blue (0.23, 0.29, 0.75) to white (0.86, 0.86, 0.86)
-      double local_t = t / 0.5;
-      r = 0.23 + (0.86 - 0.23) * local_t;
-      g = 0.29 + (0.86 - 0.29) * local_t;
-      b = 0.75 + (0.86 - 0.75) * local_t;
-    } else {
-      // Interpolate white (0.86, 0.86, 0.86) to red (0.7, 0.01, 0.14)
-      double local_t = (t - 0.5) / 0.5;
-      r = 0.86 + (0.7 - 0.86) * local_t;
-      g = 0.86 + (0.01 - 0.86) * local_t;
-      b = 0.86 + (0.14 - 0.86) * local_t;
-    }
-    lut->SetTableValue(i, r, g, b);
-  }
-  // Create a mapper and actor if we have a dataset
-  vtkNew<vtkPolyDataMapper> mapper;
-  if (dataObj) {
-    mapper->SetLookupTable(lut);
-    mapper->SetColorModeToMapScalars();
-    mapper->SetInterpolateScalarsBeforeMapping(1);
-    mapper->SetInputData(dataObj);
-    double range[2] = {0.0, 1.0};
-    if (auto scalars = dataObj->GetPointData()->GetScalars()) {
-      scalars->GetRange(range);
-    }
-    mapper->SetScalarRange(range);
-  }
+  // Opacity transfer function for intricate Mandelbulb
+  vtkNew<vtkPiecewiseFunction> opacityTF;
+  opacityTF->AddPoint(-32767, 0.0); // Background: fully transparent
+  opacityTF->AddPoint(0, 0.01);     // Low values: transparent
+  opacityTF->AddPoint(10000, 0.1);  // Fractal boundary: faint
+  opacityTF->AddPoint(22000, 0.25); // Fractal: more visible
+  opacityTF->AddPoint(30000, 0.6);  // Fractal: high opacity
+  opacityTF->AddPoint(32767, 0.85); // Fractal core: very high opacity
 
-  vtkNew<vtkActor> actor;
-  actor->SetMapper(mapper);
+  // Color transfer function for intricate Mandelbulb (deep blue → cyan → green
+  // → yellow → magenta → white)
+  vtkNew<vtkColorTransferFunction> colorTF;
+  colorTF->AddRGBPoint(-32767, 0.0, 0.0, 0.0); // Background: black
+  colorTF->AddRGBPoint(0, 0.1, 0.1, 0.4);      // Deep blue
+  colorTF->AddRGBPoint(8000, 0.0, 0.8, 1.0);   // Cyan
+  colorTF->AddRGBPoint(14000, 0.0, 1.0, 0.3);  // Green
+  colorTF->AddRGBPoint(20000, 1.0, 1.0, 0.0);  // Yellow
+  colorTF->AddRGBPoint(26000, 1.0, 0.0, 1.0);  // Magenta
+  colorTF->AddRGBPoint(32767, 1.0, 1.0, 1.0);  // White core
+
+  vtkNew<vtkPiecewiseFunction> gradientOpacityTF;
+  gradientOpacityTF->AddPoint(0.0, 0.0);     // Flat regions: transparent
+  gradientOpacityTF->AddPoint(1000.0, 0.25); // Low gradients: faint
+  gradientOpacityTF->AddPoint(6000.0, 0.5);  // Edges: visible
+  gradientOpacityTF->AddPoint(20000.0, 1.0); // Strong edges: fully visible
+
+  // Volume property
+  vtkNew<vtkVolumeProperty> volumeProperty;
+  volumeProperty->SetScalarOpacity(opacityTF);
+  volumeProperty->SetColor(colorTF);
+  volumeProperty->SetGradientOpacity(gradientOpacityTF);
+  volumeProperty->SetDisableGradientOpacity(0);
+  volumeProperty->ShadeOn();
+  volumeProperty->SetInterpolationTypeToLinear();
+
+  // Set up the volume mapper
+  vtkNew<vtkGPUVolumeRayCastMapper> mapper;
+  mapper->SetInputData(imageData);
+  mapper->UseJitteringOn();
+
+  vtkNew<vtkVolume> volume;
+  volume->SetMapper(mapper);
+  volume->SetProperty(volumeProperty);
 
   // Create a renderer, render window, and interactor
   vtkNew<vtkRenderer> renderer;
@@ -103,15 +124,11 @@ int main(int argc, char *argv[]) {
   vtkNew<vtkRenderWindowInteractor> renderWindowInteractor;
   renderWindowInteractor->SetRenderWindow(renderWindow);
 
-  // Add the actor to the scene
-  renderer->AddActor(actor);
-  renderer->SetBackground(0.2, 0.2, 0.2);
+  // Add the volume to the scene
+  renderer->AddVolume(volume);
+  renderer->SetBackground(0.3, 0.3, 0.3);
   renderer->ResetCamera();
-  renderer->GetActiveCamera()->Azimuth(-90);
-  renderer->GetActiveCamera()->Elevation(-115);
-  // renderer->GetActiveCamera()->Azimuth(50);
-  // renderer->GetActiveCamera()->Roll(90);
-  renderer->GetActiveCamera()->Dolly(1.2);
+  renderer->GetActiveCamera()->Zoom(1.8);
   renderer->ResetCameraClippingRange();
 
 // Render and interact
