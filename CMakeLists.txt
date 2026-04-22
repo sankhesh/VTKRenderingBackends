@@ -3,15 +3,16 @@ cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
 project(TestVTKRenderingBackend)
 
 find_package(VTK COMPONENTS
+  CommonComputationalGeometry
   CommonCore
   CommonDataModel
+  FiltersCore
   FiltersSources
-  IOXML
   InteractionStyle
+  RenderingCore
   RenderingOpenGL2
   RenderingWebGPU
   RenderingUI
-  RenderingVolumeOpenGL2
 )
 
 if (NOT VTK_FOUND)
