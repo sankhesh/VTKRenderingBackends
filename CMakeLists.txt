@@ -27,13 +27,6 @@ vtk_module_autoinit(
   TARGETS ${PROJECT_NAME}
   MODULES ${VTK_LIBRARIES}
 )
-if (DEFINED EMSCRIPTEN)
-  target_compile_definitions(${PROJECT_NAME} PRIVATE
-    VTKWEBGPU_EMSCRIPTEN=1
-  )
-  # target_compile_options(${PROJECT_NAME} PRIVATE -sMEMORY64)
-  # target_link_options(${PROJECT_NAME} PRIVATE -sMEMORY64)
-endif()
 
 if(DEFINED EMSCRIPTEN)
   configure_file(
